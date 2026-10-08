@@ -13,9 +13,14 @@ from config import TEMP_DIR
 
 logger = logging.getLogger(__name__)
 
-# Регулярное выражение для поиска ссылок TikTok в тексте сообщения
+# Регулярные выражения для поиска ссылок
 TIKTOK_URL_REGEX = re.compile(
     r'(https?://(?:www\.|vm\.|vt\.|m\.|t\.)?tiktok\.com/[^\s]+|https?://[a-zA-Z0-9\.\-]+\.tiktokv\.com/[^\s]+)',
+    re.IGNORECASE
+)
+
+YOUTUBE_URL_REGEX = re.compile(
+    r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})',
     re.IGNORECASE
 )
 
@@ -45,6 +50,16 @@ def find_tiktok_url(text: str) -> Optional[str]:
         # Убираем лишние знаки препинания на конце, если они прилипли
         url = match.group(0).rstrip(".,;:!?)\"'>")
         return url
+    return None
+
+
+def find_youtube_url(text: str) -> Optional[str]:
+    """Извлекает первую ссылку YouTube из текста."""
+    if not text:
+        return None
+    match = YOUTUBE_URL_REGEX.search(text)
+    if match:
+        return match.group(0).rstrip(".,;:!?)\"'>")
     return None
 
 
@@ -271,6 +286,104 @@ async def download_tiktok_audio(url: str) -> Optional[Path]:
                         return f
         except Exception as e:
             logger.warning(f"Ошибка при скачивании аудио yt-dlp: {e}")
+        return None
+
+    return await asyncio.to_thread(_get_audio)
+
+
+def _download_via_ytdlp_youtube(url: str, unique_id: str) -> Optional[TikTokMediaResult]:
+    """Загрузка видео с YouTube с помощью yt-dlp."""
+    out_template = str(TEMP_DIR / f"{unique_id}_%(id)s.%(ext)s")
+    
+    # Для YouTube скачиваем формат mp4, стараясь ограничиться размером (около 50МБ для Telegram)
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'format': 'best[ext=mp4][filesize<=50M]/bestvideo[ext=mp4][filesize<=40M]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': out_template,
+        'noplaylist': True,
+        'socket_timeout': 20,
+        'merge_output_format': 'mp4'
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            if not info:
+                return None
+                
+            title = info.get('title') or "YouTube Video"
+            author_name = info.get('uploader') or ""
+            author_username = info.get('uploader_id') or author_name
+            video_id = str(info.get('id', unique_id))
+            duration = int(info.get('duration') or 0)
+            width = info.get('width')
+            height = info.get('height')
+
+            matching_files = list(TEMP_DIR.glob(f"{unique_id}_{video_id}.*"))
+            if not matching_files:
+                matching_files = list(TEMP_DIR.glob(f"{unique_id}*.*"))
+
+            for f in matching_files:
+                if f.is_file() and f.suffix.lower() in ('.mp4', '.mkv', '.webm'):
+                    return TikTokMediaResult(
+                        media_type="video",
+                        title=title,
+                        author_name=author_name,
+                        author_username=author_username,
+                        video_id=video_id,
+                        original_url=url,
+                        file_path=f,
+                        duration=duration,
+                        width=width,
+                        height=height
+                    )
+    except Exception as e:
+        logger.warning(f"yt-dlp не смог скачать YouTube видео {url}: {e}")
+
+    return None
+
+
+async def download_youtube_media(url: str) -> TikTokMediaResult:
+    """Асинхронная функция скачивания медиа из YouTube."""
+    unique_id = uuid.uuid4().hex[:8]
+    result = await asyncio.to_thread(_download_via_ytdlp_youtube, url, unique_id)
+    if result:
+        return result
+    raise RuntimeError("Не удалось скачать видео с YouTube. Возможно оно слишком большое (>50МБ) или недоступно.")
+
+
+async def download_youtube_audio(url: str) -> Optional[Path]:
+    """Скачивание аудиодорожки из YouTube видео в формате MP3."""
+    unique_id = uuid.uuid4().hex[:8]
+
+    def _get_audio():
+        out_template = str(TEMP_DIR / f"{unique_id}_audio_%(id)s.%(ext)s")
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'bestaudio/best',
+            'outtmpl': out_template,
+            'socket_timeout': 20,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                audio_id = info.get('id', unique_id)
+                for f in TEMP_DIR.glob(f"{unique_id}_audio_{audio_id}*"):
+                    if f.is_file():
+                        return f
+                for f in TEMP_DIR.glob(f"{unique_id}_audio*"):
+                    if f.is_file():
+                        return f
+        except Exception as e:
+            logger.warning(f"Ошибка при скачивании аудио YouTube: {e}")
         return None
 
     return await asyncio.to_thread(_get_audio)

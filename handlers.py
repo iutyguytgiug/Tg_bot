@@ -18,8 +18,11 @@ from aiogram.exceptions import TelegramBadRequest
 
 from downloader import (
     find_tiktok_url,
+    find_youtube_url,
     download_tiktok_media,
     download_tiktok_audio,
+    download_youtube_media,
+    download_youtube_audio,
     cleanup_files,
     TikTokMediaResult
 )
@@ -51,14 +54,14 @@ url_cache = UrlCache()
 async def cmd_start(message: Message):
     """Обработка команды /start."""
     welcome_text = (
-        "👋 <b>Привет! Я бот для скачивания из TikTok без водяного знака.</b>\n\n"
+        "👋 <b>Привет! Я бот для скачивания видео без водяного знака.</b>\n\n"
         "✨ <b>Что я умею:</b>\n"
-        "• 📥 Скачивать видео в максимальном качестве без водяного знака (HD)\n"
+        "• 📥 Скачивать видео из <b>TikTok</b> и <b>YouTube</b> в высоком качестве\n"
         "• 🎵 Извлекать и отправлять аудиодорожку (MP3)\n"
-        "• 📸 Скачивать фото-альбомы (слайдшоу)\n\n"
+        "• 📸 Скачивать фото-альбомы из TikTok (слайдшоу)\n\n"
         "🚀 <b>Как пользоваться:</b>\n"
-        "Просто отправь мне любую ссылку на TikTok (например, из приложения через «Поделиться» → «Ссылка»).\n\n"
-        "<i>Поддерживаются ссылки tiktok.com, vm.tiktok.com, vt.tiktok.com и другие.</i>"
+        "Просто отправь мне ссылку на TikTok или YouTube.\n\n"
+        "<i>Поддерживаются ссылки tiktok.com, youtube.com, youtu.be и YouTube Shorts.</i>"
     )
     await message.answer(welcome_text, parse_mode="HTML")
 
@@ -68,10 +71,10 @@ async def cmd_help(message: Message):
     """Обработка команды /help."""
     help_text = (
         "ℹ️ <b>Инструкция по использованию:</b>\n\n"
-        "1. Откройте TikTok и найдите понравившееся видео или фото.\n"
+        "1. Откройте TikTok или YouTube и найдите видео.\n"
         "2. Нажмите <b>«Поделиться»</b> и выберите <b>«Ссылка»</b>.\n"
         "3. Отправьте скопированную ссылку в этот чат.\n"
-        "4. Через несколько секунд бот пришлет готовый файл без водяных знаков!\n\n"
+        "4. Через несколько секунд бот пришлет готовый файл!\n\n"
         "❓ <b>Если видео не скачивается:</b>\n"
         "• Проверьте, не является ли видео приватным или удаленным.\n"
         "• Проверьте, доступно ли оно в вашем регионе.\n"
@@ -81,33 +84,41 @@ async def cmd_help(message: Message):
 
 
 @router.message(F.text)
-async def handle_tiktok_link(message: Message):
-    """Обработка входящих сообщений с ссылками TikTok."""
-    url = find_tiktok_url(message.text)
+async def handle_video_link(message: Message):
+    """Обработка входящих сообщений с ссылками TikTok и YouTube."""
+    tiktok_url = find_tiktok_url(message.text)
+    youtube_url = find_youtube_url(message.text)
+    
+    url = tiktok_url or youtube_url
     if not url:
         # Если ссылки нет, даем подсказку
         await message.reply(
-            "🔍 Отправьте корректную ссылку на видео из TikTok (например, https://vm.tiktok.com/...)",
+            "🔍 Отправьте корректную ссылку на видео из TikTok или YouTube.",
             parse_mode="HTML"
         )
         return
 
+    platform = "YouTube" if youtube_url else "TikTok"
+
     # Отправляем статус "в процессе"
-    status_msg = await message.reply("⏳ <i>Скачиваю медиа без водяного знака...</i>", parse_mode="HTML")
+    status_msg = await message.reply(f"⏳ <i>Скачиваю медиа из {platform}...</i>", parse_mode="HTML")
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_VIDEO)
 
     try:
-        # Скачиваем медиа
-        media_result: TikTokMediaResult = await download_tiktok_media(url)
+        # Скачиваем медиа в зависимости от платформы
+        if youtube_url:
+            media_result: TikTokMediaResult = await download_youtube_media(url)
+        else:
+            media_result: TikTokMediaResult = await download_tiktok_media(url)
     except Exception as e:
         logger.error(f"Ошибка при обработке {url}: {e}")
         await status_msg.edit_text(
-            "❌ <b>Не удалось скачать видео.</b>\n\n"
-            "Возможные причины:\n"
-            "• Видео является приватным или было удалено автором\n"
-            "• Ограничение доступа по региону\n"
-            "• Недействительная ссылка\n\n"
-            "<i>Пожалуйста, проверьте ссылку и попробуйте снова.</i>",
+            f"❌ <b>Не удалось скачать видео.</b>\n\n"
+            f"Возможные причины:\n"
+            f"• Видео удалено или приватное\n"
+            f"• Размер видео превышает 50 МБ (лимит Telegram)\n"
+            f"• Недействительная ссылка\n\n"
+            f"<i>Пожалуйста, проверьте ссылку и попробуйте снова.</i>",
             parse_mode="HTML"
         )
         return
@@ -217,7 +228,11 @@ async def handle_download_audio(callback: CallbackQuery):
     await callback.bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_VOICE)
 
     try:
-        audio_path = await download_tiktok_audio(url)
+        if find_youtube_url(url):
+            audio_path = await download_youtube_audio(url)
+        else:
+            audio_path = await download_tiktok_audio(url)
+            
         if not audio_path or not audio_path.exists():
             await callback.message.reply("❌ Не удалось извлечь аудиодорожку из этого видео.")
             return

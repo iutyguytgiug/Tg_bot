@@ -299,12 +299,9 @@ def _download_via_ytdlp_youtube(url: str, unique_id: str) -> Optional[TikTokMedi
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        # Жестко ограничиваем размер: 
-        # 1. Лучшее mp4 видео до 50МБ
-        # 2. Видео+Аудио до 40МБ
-        # 3. Лучшее mp4 не больше 480p (часто весит мало)
-        # 4. Самое худшее качество (если ничего не подошло)
-        'format': 'best[ext=mp4][filesize<=45M]/bestvideo[ext=mp4][filesize<=35M]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/worst[ext=mp4]/worst',
+        # Для YouTube размеры часто неизвестны (filesize), поэтому используем filesize_approx
+        # Если размер неизвестен вообще, берем максимум 720p, чтобы точно уложиться в лимит для коротких видео
+        'format': 'best[filesize<=45M]/bestvideo[filesize<=35M]+bestaudio/best[filesize_approx<=45M]/bestvideo[filesize_approx<=35M]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=720]/worst',
         'outtmpl': out_template,
         'noplaylist': True,
         'socket_timeout': 20,

@@ -81,11 +81,11 @@ def _download_via_ytdlp(url: str, unique_id: str) -> Optional[TikTokMediaResult]
     """
     out_template = str(TEMP_DIR / f"{unique_id}_%(id)s.%(ext)s")
     
-    # Формат: выбираем лучший поток БЕЗ водяного знака
+    # Формат: выбираем лучший поток БЕЗ водяного знака и весом до 45 МБ
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'best[format_id!*=watermarked][ext=mp4]/best[format_id!*=watermarked]/best',
+        'format': 'best[format_id!*=watermarked][filesize<=45M][ext=mp4]/best[format_id!*=watermarked][filesize<=45M]/best[filesize<=45M]/worst',
         'outtmpl': out_template,
         'noplaylist': False,
         'extract_flat': False,
@@ -299,7 +299,12 @@ def _download_via_ytdlp_youtube(url: str, unique_id: str) -> Optional[TikTokMedi
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'best[ext=mp4][filesize<=50M]/bestvideo[ext=mp4][filesize<=40M]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        # Жестко ограничиваем размер: 
+        # 1. Лучшее mp4 видео до 50МБ
+        # 2. Видео+Аудио до 40МБ
+        # 3. Лучшее mp4 не больше 480p (часто весит мало)
+        # 4. Самое худшее качество (если ничего не подошло)
+        'format': 'best[ext=mp4][filesize<=45M]/bestvideo[ext=mp4][filesize<=35M]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/worst[ext=mp4]/worst',
         'outtmpl': out_template,
         'noplaylist': True,
         'socket_timeout': 20,
